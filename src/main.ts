@@ -1,6 +1,8 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 import log from 'electron-log/main';
+import { registerFileHandlers } from './handlers/fileHandlers';
+import { IPC_CHANNELS } from './constants';
 
 log.initialize();
 log.info(`Starting Fraser v${app.getVersion()}`);
@@ -21,6 +23,26 @@ function createWindow(): void {
     },
     titleBarStyle: 'hiddenInset',
     frame: process.platform === 'darwin',
+  });
+
+  // Register handlers
+  registerFileHandlers(mainWindow);
+
+  // Window control handlers
+  ipcMain.on(IPC_CHANNELS.WINDOW_MINIMIZE, () => {
+    mainWindow?.minimize();
+  });
+
+  ipcMain.on(IPC_CHANNELS.WINDOW_MAXIMIZE, () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow?.maximize();
+    }
+  });
+
+  ipcMain.on(IPC_CHANNELS.WINDOW_CLOSE, () => {
+    mainWindow?.close();
   });
 
   // Load renderer
