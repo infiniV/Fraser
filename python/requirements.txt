@@ -6,3 +6,5 @@ opencv-python-headless>=4.9.0
 numpy>=1.26.0
 torch>=2.1.0
 torchvision>=0.16.0
+scipy>=1.11.0
+filterpy>=1.4.5
