@@ -1,11 +1,19 @@
-"""Face anonymization methods for video processing."""
+"""Face anonymization methods for video processing.
+
+HIPAA-compliant face redaction using solid fills only.
+Blur/pixelation methods are NOT included as they can be reversed by AI.
+"""
 import cv2
 import numpy as np
 from typing import Tuple
 
 
 class Anonymizer:
-    """Static methods for face anonymization in video frames."""
+    """Static methods for HIPAA-compliant face anonymization in video frames.
+
+    Only solid redaction methods are provided (black rectangle, color fill).
+    Blur and pixelation are NOT HIPAA-compliant as they can be reversed by AI.
+    """
 
     @staticmethod
     def _apply_padding(
@@ -43,49 +51,20 @@ class Anonymizer:
         return x1_padded, y1_padded, x2_padded, y2_padded
 
     @staticmethod
-    def blur(
-        image: np.ndarray,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        padding: float = 0.1
-    ) -> np.ndarray:
-        """Apply Gaussian blur to face region.
+    def hex_to_bgr(hex_color: str) -> Tuple[int, int, int]:
+        """Convert hex color to BGR tuple for OpenCV.
 
         Args:
-            image: Input image as numpy array
-            x1, y1: Top-left corner of face bounding box
-            x2, y2: Bottom-right corner of face bounding box
-            padding: Padding fraction to expand bounding box (default: 0.1)
+            hex_color: Hex color string (e.g., "#FF0000" or "FF0000")
 
         Returns:
-            Image with blurred face region
+            Tuple of (B, G, R) values for OpenCV
         """
-        img_height, img_width = image.shape[:2]
-        x1, y1, x2, y2 = Anonymizer._apply_padding(
-            x1, y1, x2, y2, padding, img_height, img_width
-        )
-
-        # Extract face region
-        face_region = image[y1:y2, x1:x2]
-
-        # Calculate kernel size based on face size
-        kernel_width = (x2 - x1) // 3
-        kernel_height = (y2 - y1) // 3
-
-        # Ensure kernel size is odd and at least 3
-        kernel_width = max(3, kernel_width if kernel_width % 2 == 1 else kernel_width + 1)
-        kernel_height = max(3, kernel_height if kernel_height % 2 == 1 else kernel_height + 1)
-
-        # Apply Gaussian blur
-        blurred = cv2.GaussianBlur(face_region, (kernel_width, kernel_height), 0)
-
-        # Replace face region with blurred version
-        result = image.copy()
-        result[y1:y2, x1:x2] = blurred
-
-        return result
+        hex_color = hex_color.lstrip('#')
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        return (b, g, r)  # OpenCV uses BGR
 
     @staticmethod
     def black_rectangle(
@@ -144,10 +123,7 @@ class Anonymizer:
             x1, y1, x2, y2, padding, img_height, img_width
         )
 
-        # Convert hex color to BGR (OpenCV format)
-        color = color.lstrip('#')
-        r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-        bgr_color = (b, g, r)
+        bgr_color = Anonymizer.hex_to_bgr(color)
 
         result = image.copy()
         cv2.rectangle(result, (x1, y1), (x2, y2), bgr_color, -1)
@@ -171,7 +147,7 @@ class Anonymizer:
             image: Input image as numpy array
             x1, y1: Top-left corner of face bounding box
             x2, y2: Bottom-right corner of face bounding box
-            mode: Anonymization mode ("blur", "black", or "color")
+            mode: Anonymization mode ("black" or "color")
             color: Hex color string for color_fill mode
             padding: Padding fraction to expand bounding box
 
@@ -181,11 +157,13 @@ class Anonymizer:
         Raises:
             ValueError: If mode is not recognized
         """
-        if mode == "blur":
-            return Anonymizer.blur(image, x1, y1, x2, y2, padding)
-        elif mode == "black":
+        if mode == "black":
             return Anonymizer.black_rectangle(image, x1, y1, x2, y2, padding)
         elif mode == "color":
             return Anonymizer.color_fill(image, x1, y1, x2, y2, color, padding)
         else:
-            raise ValueError(f"Unknown anonymization mode: {mode}")
+            raise ValueError(
+                f"Unknown anonymization mode: {mode}. "
+                f"Valid modes are 'black' or 'color'. "
+                f"Blur is NOT supported (HIPAA non-compliant)."
+            )
