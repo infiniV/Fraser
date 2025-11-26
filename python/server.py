@@ -14,13 +14,17 @@ from processing.pipeline import ProcessingJob
 
 
 class ProcessRequest(BaseModel):
-    file: str = Field(..., description="Path to the video file to process")
-    output_dir: str = Field(..., description="Directory to save processed output")
-    model: str = Field(default="yolov8n-face.pt", description="Face detection model to use")
-    mode: Literal["blur", "black", "color"] = Field(default="blur", description="Processing mode")
-    color: Optional[str] = Field(default="#000000", description="Color for color mode (hex format)")
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="Detection confidence threshold")
-    padding: float = Field(default=0.1, ge=0.0, le=1.0, description="Padding as fraction of face size")
+    input_path: str = Field(..., description="Path to the video file to process")
+    output_path: str = Field(..., description="Path to save processed output")
+    model: str = Field(default="yolov11n-face.pt", description="Face detection model to use")
+    confidence: float = Field(default=0.25, ge=0.0, le=1.0, description="Detection confidence threshold")
+    padding: float = Field(default=0.20, ge=0.0, le=1.0, description="Padding as fraction of face size")
+    detection_resolution: str = Field(default="360p", description="Detection resolution: 144p, 240p, 360p, or native")
+    redaction_mode: str = Field(default="black", description="Redaction mode: blur, black, or color")
+    redaction_color: str = Field(default="#000000", description="Color for color mode (hex format)")
+    temporal_buffer: int = Field(default=5, ge=0, description="Temporal smoothing buffer size")
+    generate_audit: bool = Field(default=True, description="Generate audit trail")
+    thumbnail_interval: int = Field(default=30, ge=1, description="Thumbnail generation interval in seconds")
 
 
 class DeviceInfo(BaseModel):
@@ -73,12 +77,31 @@ def get_device_info() -> DeviceInfo:
     )
 
 
+RESOLUTION_MAP = {
+    "144p": (256, 144),
+    "240p": (416, 240),
+    "360p": (640, 360),
+    "native": None,
+}
+
 websocket_connections: List[WebSocket] = []
+active_connections: Dict[str, WebSocket] = {}
 active_jobs: Dict[str, dict] = {}
 video_processor: Optional[VideoProcessor] = None
 
 
-async def broadcast_progress(message: dict):
+async def broadcast_progress(job_id: str, data: dict):
+    """Send progress update to specific job's WebSocket connection."""
+    if job_id in active_connections:
+        try:
+            await active_connections[job_id].send_json(data)
+        except Exception:
+            # Connection closed, remove it
+            active_connections.pop(job_id, None)
+
+
+async def broadcast_to_all(message: dict):
+    """Broadcast message to all general WebSocket connections."""
     disconnected = []
     for websocket in websocket_connections:
         try:
@@ -171,17 +194,16 @@ def run_processing(job_id: str, request: ProcessRequest):
     """Run video processing synchronously in background thread."""
     global video_processor
 
-    input_path = Path(request.file)
-    output_dir = Path(request.output_dir)
-    output_path = output_dir / f"{input_path.stem}_processed{input_path.suffix}"
+    input_path = Path(request.input_path)
+    output_path = Path(request.output_path)
 
     job = ProcessingJob(
         id=job_id,
         input_path=str(input_path),
         output_path=str(output_path),
         model=request.model,
-        mode=request.mode,
-        color=request.color or "#000000",
+        mode=request.redaction_mode,
+        color=request.redaction_color,
         confidence=request.confidence,
         padding=request.padding
     )
@@ -195,6 +217,7 @@ def run_processing(job_id: str, request: ProcessRequest):
         print(f"[{job_id[:8]}] Completed: {stats.processed_frames} frames, {stats.faces_detected} faces, {stats.average_fps:.1f} FPS")
 
         # Save summary report
+        output_dir = Path(output_path).parent
         report_path = video_processor.save_report(job, stats, str(output_dir))
         print(f"[{job_id[:8]}] Report saved: {report_path}")
 
@@ -227,11 +250,11 @@ async def process_video(request: ProcessRequest, background_tasks: BackgroundTas
     job_id = str(uuid.uuid4())
 
     # Validate input file exists
-    if not Path(request.file).exists():
-        raise HTTPException(status_code=400, detail=f"Input file not found: {request.file}")
+    if not Path(request.input_path).exists():
+        raise HTTPException(status_code=400, detail=f"Input file not found: {request.input_path}")
 
     # Validate output directory
-    output_dir = Path(request.output_dir)
+    output_dir = Path(request.output_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Start processing in background
@@ -240,7 +263,7 @@ async def process_video(request: ProcessRequest, background_tasks: BackgroundTas
     return ProcessResponse(
         job_id=job_id,
         status="processing",
-        message=f"Video processing started for {Path(request.file).name}"
+        message=f"Video processing started for {Path(request.input_path).name}"
     )
 
 
@@ -262,8 +285,37 @@ async def cancel_job(job_id: str):
     )
 
 
+@app.websocket("/ws/progress/{job_id}")
+async def websocket_progress(websocket: WebSocket, job_id: str):
+    """WebSocket endpoint for receiving real-time progress updates for a specific job."""
+    await websocket.accept()
+    active_connections[job_id] = websocket
+
+    try:
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connected",
+            "job_id": job_id,
+            "message": "Connected to progress stream"
+        })
+
+        # Keep connection alive and handle incoming messages
+        while True:
+            data = await websocket.receive_text()
+            # Echo back pong for heartbeat
+            if data == "ping":
+                await websocket.send_json({
+                    "type": "pong",
+                    "job_id": job_id
+                })
+    except WebSocketDisconnect:
+        # Clean up connection on disconnect
+        active_connections.pop(job_id, None)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    """General WebSocket endpoint for system-wide updates."""
     await websocket.accept()
     websocket_connections.append(websocket)
 
