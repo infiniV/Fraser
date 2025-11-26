@@ -168,10 +168,15 @@ class VideoProcessor:
         # Statistics
         self.stats = ProcessingStats()
 
-        # Audit data
+        # Audit data - convert Path objects to strings for JSON serialization
         self.audit_thumbnails: List[np.ndarray] = []
+        config_dict = asdict(config)
+        # Convert any Path objects to strings
+        for key, value in config_dict.items():
+            if isinstance(value, Path):
+                config_dict[key] = str(value)
         self.audit_data: Dict = {
-            "config": asdict(config),
+            "config": config_dict,
             "frames": [],
         }
 
@@ -183,15 +188,33 @@ class VideoProcessor:
         """
         import torch
 
-        model_path = Path(self.config.model_name)
+        model_name = self.config.model_name
+
+        # Add .pt extension if not present
+        if not model_name.endswith('.pt'):
+            model_name = f"{model_name}.pt"
+
+        # Check multiple locations for the model
+        possible_paths = [
+            Path(model_name),  # Absolute or relative path as-is
+            Path(__file__).parent.parent / "models" / model_name,  # python/models/
+            Path(__file__).parent.parent / model_name,  # python/
+        ]
+
+        model_path = None
+        for p in possible_paths:
+            if p.exists():
+                model_path = p
+                break
 
         # Load model
-        if model_path.exists():
+        if model_path:
             print(f"Loading model from: {model_path}")
             model = YOLO(str(model_path))
         else:
-            print(f"Loading model: {self.config.model_name}")
-            model = YOLO(self.config.model_name)
+            # Try ultralytics auto-download as fallback
+            print(f"Loading model: {model_name}")
+            model = YOLO(model_name)
 
         # Detect and use best available device
         if torch.cuda.is_available():

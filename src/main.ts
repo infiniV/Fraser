@@ -52,6 +52,7 @@ function createWindow(): void {
     height: 700,
     minWidth: 800,
     minHeight: 600,
+    resizable: true,
     backgroundColor: '#0a0a0a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

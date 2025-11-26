@@ -5,10 +5,10 @@ class FraserApp {
     this.pythonReady = false;
     this.outputPath = '';
     this.settings = {
-      model: 'yolov11n-face',
+      model: 'yolov8n-face',
       mode: 'black',
       confidence: 0.25,
-      detectionResolution: '360p',
+      detectionResolution: '144p',
       redactionColor: '#000000',
       temporalBuffer: 5
     };
@@ -240,7 +240,7 @@ class FraserApp {
   }
 
   handleProcessProgress(data) {
-    const { itemId, progress, status, jobId, stats, error, fps, facesInFrame } = data;
+    const { itemId, progress, status, jobId, stats, error, fps, facesInFrame, totalFrames, currentFrame } = data;
 
     // Find the queue item
     const item = this.queue.find(q => q.id === itemId);
@@ -248,16 +248,36 @@ class FraserApp {
 
     if (status === 'processing') {
       item.status = 'processing';
-      item.progress = progress || 0;
+      // Cap progress at 100%
+      item.progress = Math.min(progress || 0, 100);
       item.jobId = jobId;
+      if (totalFrames) item.totalFrames = totalFrames;
 
-      // Connect to WebSocket for real-time progress updates
-      if (jobId && !this.progressSocket) {
-        this.connectProgressSocket(jobId);
+      // Update progress UI from HTTP polling data
+      if (fps !== undefined) {
+        const fpsRounded = Math.round(fps * 100) / 100;
+        document.getElementById('fps-display').textContent = `${fpsRounded} FPS`;
+        this.setStatus(`Processing ${item.name} - ${fpsRounded} FPS`);
       }
 
-      if (fps) {
-        this.setStatus(`Processing ${item.name} - ${fps} FPS`);
+      if (facesInFrame !== undefined) {
+        document.getElementById('tracks-display').textContent = `${facesInFrame} tracks`;
+      }
+
+      // Calculate ETA based on remaining frames and fps
+      if (totalFrames && currentFrame !== undefined && fps > 0) {
+        const remainingFrames = Math.max(0, totalFrames - currentFrame);
+        const eta = Math.round(remainingFrames / fps);
+        if (eta >= 0) {
+          const minutes = Math.floor(eta / 60);
+          const seconds = Math.floor(eta % 60);
+          document.getElementById('eta-display').textContent = `ETA: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+      }
+
+      // Connect to WebSocket for real-time progress updates (fallback)
+      if (jobId && !this.progressSocket) {
+        this.connectProgressSocket(jobId);
       }
     } else if (status === 'completed') {
       item.status = 'completed';

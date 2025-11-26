@@ -19,6 +19,9 @@ interface ProcessingRequest {
     model: string;
     mode: string;
     confidence: number;
+    detectionResolution?: string;
+    redactionColor?: string;
+    temporalBuffer?: number;
   };
 }
 
@@ -85,10 +88,10 @@ async function processItem(
       model: settings.model,
       confidence: settings.confidence,
       padding: 0.20,
-      detection_resolution: '360p',
+      detection_resolution: settings.detectionResolution || '144p',
       redaction_mode: settings.mode,
-      redaction_color: '#000000',
-      temporal_buffer: 5,
+      redaction_color: settings.redactionColor || '#000000',
+      temporal_buffer: settings.temporalBuffer || 5,
       generate_audit: true,
       thumbnail_interval: 30
     })
@@ -126,7 +129,9 @@ async function processItem(
           status: 'processing',
           jobId: currentJobId,
           fps: status.fps,
-          facesInFrame: status.faces_in_frame
+          facesInFrame: status.faces_in_frame,
+          totalFrames: status.total_frames,
+          currentFrame: status.frame
         });
       }
     } else if (status.type === 'completed') {

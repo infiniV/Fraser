@@ -156,10 +156,12 @@ export class PythonServer extends EventEmitter {
       });
 
       if (response.ok) {
-        const data = await response.json() as { device?: string };
+        const data = await response.json() as { device_info?: { type: string; name: string } };
+        const deviceInfo = data.device_info;
+        const deviceStr = deviceInfo ? `${deviceInfo.name}` : 'Unknown';
         return {
           running: true,
-          device: data.device,
+          device: deviceStr,
         };
       }
     } catch (error) {
