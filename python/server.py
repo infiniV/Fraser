@@ -287,6 +287,18 @@ async def process_video(request: ProcessRequest, background_tasks: BackgroundTas
     output_dir = Path(request.output_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Register job IMMEDIATELY so /job/{id} doesn't 404
+    active_jobs[job_id] = {
+        "type": "queued",
+        "job_id": job_id,
+        "status": "loading",
+        "message": "Loading model and initializing...",
+        "percent": 0,
+        "frame": 0,
+        "total_frames": 0,
+        "fps": 0
+    }
+
     # Start processing in background
     background_tasks.add_task(run_processing, job_id, request)
 
