@@ -250,6 +250,12 @@ class FraserApp {
       item.status = 'processing';
       item.progress = progress || 0;
       item.jobId = jobId;
+
+      // Connect to WebSocket for real-time progress updates
+      if (jobId && !this.progressSocket) {
+        this.connectProgressSocket(jobId);
+      }
+
       if (fps) {
         this.setStatus(`Processing ${item.name} - ${fps} FPS`);
       }
@@ -261,12 +267,14 @@ class FraserApp {
         item.duration = `${Math.round(stats.processing_time)}s`;
       }
       this.setStatus(`Completed: ${item.name}`);
+      this.disconnectProgressSocket();
       this.saveState();
       this.checkAllCompleted();
     } else if (status === 'error') {
       item.status = 'error';
       item.error = error;
       this.setStatus(`Error: ${error}`);
+      this.disconnectProgressSocket();
       this.saveState();
     }
 
@@ -479,6 +487,54 @@ class FraserApp {
     } catch (error) {
       console.error('Error detecting GPU:', error);
       document.getElementById('status-gpu').textContent = 'GPU: Unknown';
+    }
+  }
+
+  connectProgressSocket(jobId) {
+    if (this.progressSocket) {
+      this.progressSocket.close();
+    }
+
+    const wsUrl = `ws://localhost:8420/ws/progress/${jobId}`;
+    this.progressSocket = new WebSocket(wsUrl);
+
+    this.progressSocket.onopen = () => {
+      console.log(`WebSocket connected for job ${jobId}`);
+    };
+
+    this.progressSocket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      this.handleProgressUpdate(data);
+    };
+
+    this.progressSocket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    this.progressSocket.onclose = () => {
+      console.log('WebSocket connection closed');
+      this.progressSocket = null;
+    };
+  }
+
+  handleProgressUpdate(data) {
+    const { progress, fps, tracks, eta, status } = data;
+
+    if (fps !== undefined) {
+      this.updateProgressUI({ fps, tracks, eta });
+    }
+
+    if (status === 'completed' || status === 'error') {
+      if (this.progressSocket) {
+        this.progressSocket.close();
+      }
+    }
+  }
+
+  disconnectProgressSocket() {
+    if (this.progressSocket) {
+      this.progressSocket.close();
+      this.progressSocket = null;
     }
   }
 }
