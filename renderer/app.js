@@ -5,13 +5,17 @@ class FraserApp {
     this.pythonReady = false;
     this.outputPath = '';
     this.settings = {
-      model: 'yolov8m-face',
-      mode: 'blur',
-      confidence: 0.3
+      model: 'yolov11n-face',
+      mode: 'black',
+      confidence: 0.25,
+      detectionResolution: '360p',
+      redactionColor: '#000000',
+      temporalBuffer: 5
     };
     this.setupPackages = [];
     this.totalPackages = 0;
     this.installedPackages = 0;
+    this.progressSocket = null;
   }
 
   init() {
@@ -39,6 +43,15 @@ class FraserApp {
           document.getElementById('select-model').value = state.settings.model;
           document.getElementById('select-mode').value = state.settings.mode;
           document.getElementById('select-confidence').value = state.settings.confidence.toString();
+          if (state.settings.detectionResolution) {
+            document.getElementById('resolution-select').value = state.settings.detectionResolution;
+          }
+          if (state.settings.redactionColor) {
+            this.settings.redactionColor = state.settings.redactionColor;
+          }
+          if (state.settings.temporalBuffer) {
+            this.settings.temporalBuffer = state.settings.temporalBuffer;
+          }
         }
 
         this.renderQueue();
@@ -176,6 +189,11 @@ class FraserApp {
 
     document.getElementById('select-confidence').addEventListener('change', (e) => {
       this.settings.confidence = parseFloat(e.target.value);
+      this.saveState();
+    });
+
+    document.getElementById('resolution-select').addEventListener('change', (e) => {
+      this.settings.detectionResolution = e.target.value;
       this.saveState();
     });
 
