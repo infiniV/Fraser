@@ -8,7 +8,9 @@ import threading
 
 import av
 import numpy as np
-from ultralytics import YOLO
+# YOLO import commented out for libfacedetection testing
+# from ultralytics import YOLO
+from slimeface import detectRGB
 
 from .anonymizer import Anonymizer
 
@@ -39,63 +41,66 @@ class ProcessingJob:
 
 
 class VideoProcessor:
-    """Process videos with YOLO face detection and anonymization."""
+    """Process videos with face detection and anonymization."""
 
     def __init__(self, models_dir: str):
         """Initialize video processor.
 
         Args:
-            models_dir: Directory containing YOLO model files
+            models_dir: Directory containing model files (unused with libfacedetection)
         """
         self.models_dir = Path(models_dir)
-        self.models_cache: Dict[str, YOLO] = {}
+        # YOLO models cache commented out for libfacedetection testing
+        # self.models_cache: Dict[str, YOLO] = {}
         self._cancel_flag = threading.Event()
+        print("Using libfacedetection (slimeface) for face detection")
 
-    def load_model(self, model_name: str) -> YOLO:
-        """Load YOLO model with caching.
-
-        Args:
-            model_name: Name of the model file (e.g., "yolov8n-face" or "yolov8n-face.pt")
-
-        Returns:
-            Loaded YOLO model
-        """
-        # Normalize model name - add .pt if missing
-        if not model_name.endswith('.pt'):
-            model_name = f"{model_name}.pt"
-
-        if model_name in self.models_cache:
-            return self.models_cache[model_name]
-
-        model_path = self.models_dir / model_name
-
-        # Try local file first
-        if model_path.exists():
-            print(f"Loading model from: {model_path}")
-            model = YOLO(str(model_path))
-        else:
-            # Try standard YOLO model name (will auto-download)
-            # Map face models to standard models as fallback
-            # Use nano models for speed - face detection doesn't need large models
-            fallback_map = {
-                "yolov8n-face.pt": "yolov8n.pt",
-                "yolov8s-face.pt": "yolov8n.pt",  # Use nano for speed
-                "yolov8m-face.pt": "yolov8n.pt",  # Use nano for speed
-                "yolov8l-face.pt": "yolov8s.pt",
-                "yolov8x-face.pt": "yolov8s.pt",
-            }
-            standard_name = fallback_map.get(model_name, model_name)
-            print(f"Model {model_name} not found locally, using {standard_name} (auto-download)")
-            model = YOLO(standard_name)
-
-        # Move to CUDA if available - FP16 is handled in predict() call
-        import torch
-        if torch.cuda.is_available():
-            model.to('cuda')
-            print("Model loaded on CUDA")
-
-        self.models_cache[model_name] = model
-        return model
+    # YOLO load_model commented out for libfacedetection testing
+    # def load_model(self, model_name: str) -> YOLO:
+    #     """Load YOLO model with caching.
+    #
+    #     Args:
+    #         model_name: Name of the model file (e.g., "yolov8n-face" or "yolov8n-face.pt")
+    #
+    #     Returns:
+    #         Loaded YOLO model
+    #     """
+    #     # Normalize model name - add .pt if missing
+    #     if not model_name.endswith('.pt'):
+    #         model_name = f"{model_name}.pt"
+    #
+    #     if model_name in self.models_cache:
+    #         return self.models_cache[model_name]
+    #
+    #     model_path = self.models_dir / model_name
+    #
+    #     # Try local file first
+    #     if model_path.exists():
+    #         print(f"Loading model from: {model_path}")
+    #         model = YOLO(str(model_path))
+    #     else:
+    #         # Try standard YOLO model name (will auto-download)
+    #         # Map face models to standard models as fallback
+    #         # Use nano models for speed - face detection doesn't need large models
+    #         fallback_map = {
+    #             "yolov8n-face.pt": "yolov8n.pt",
+    #             "yolov8s-face.pt": "yolov8n.pt",  # Use nano for speed
+    #             "yolov8m-face.pt": "yolov8n.pt",  # Use nano for speed
+    #             "yolov8l-face.pt": "yolov8s.pt",
+    #             "yolov8x-face.pt": "yolov8s.pt",
+    #         }
+    #         standard_name = fallback_map.get(model_name, model_name)
+    #         print(f"Model {model_name} not found locally, using {standard_name} (auto-download)")
+    #         model = YOLO(standard_name)
+    #
+    #     # Move to CUDA if available - FP16 is handled in predict() call
+    #     import torch
+    #     if torch.cuda.is_available():
+    #         model.to('cuda')
+    #         print("Model loaded on CUDA")
+    #
+    #     self.models_cache[model_name] = model
+    #     return model
 
     def cancel(self):
         """Set cancellation flag to stop processing."""
@@ -131,8 +136,8 @@ class VideoProcessor:
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Load model
-        model = self.load_model(job.model)
+        # YOLO model loading commented out for libfacedetection testing
+        # model = self.load_model(job.model)
 
         # Initialize stats
         stats = ProcessingStats(
@@ -193,37 +198,73 @@ class VideoProcessor:
                 # Convert frame to numpy array
                 img = frame.to_ndarray(format='bgr24')
 
-                # Run YOLO detection - optimized settings
-                # classes=[0] = person only (standard YOLO), half=True for FP16
-                results = model.predict(
-                    img,
-                    conf=job.confidence,
-                    classes=[0],  # Only detect person class (closest to face in standard YOLO)
-                    half=True,    # FP16 inference on CUDA
-                    verbose=False
-                )
+                # --- libfacedetection (slimeface) detection ---
+                # Convert BGR to RGB for slimeface
+                img_rgb = img[:, :, ::-1].copy()
+                h, w = img_rgb.shape[:2]
+
+                # slimeface expects RGB bytes
+                img_bytes = img_rgb.tobytes()
+
+                # Run face detection
+                # Returns list of [x, y, w, h, confidence]
+                detections = detectRGB(w, h, img_bytes)
 
                 # Process detections
                 faces_in_frame = 0
-                for result in results:
-                    boxes = result.boxes
-                    if boxes is not None and len(boxes) > 0:
-                        # Get all boxes at once for efficiency
-                        xyxy = boxes.xyxy.cpu().numpy().astype(int)
-                        for box_coords in xyxy:
-                            x1, y1, x2, y2 = box_coords
+                for det in detections:
+                    x, y, det_w, det_h, conf = det
 
-                            # Apply anonymization
-                            img = Anonymizer.apply(
-                                img,
-                                x1, y1, x2, y2,
-                                mode=job.mode,
-                                color=job.color,
-                                padding=job.padding
-                            )
+                    # Filter by confidence threshold
+                    if conf < job.confidence * 100:  # slimeface returns 0-100, job.confidence is 0-1
+                        continue
 
-                            faces_in_frame += 1
-                            stats.faces_detected += 1
+                    # Convert from x,y,w,h to x1,y1,x2,y2
+                    x1, y1 = x, y
+                    x2, y2 = x + det_w, y + det_h
+
+                    # Apply anonymization
+                    img = Anonymizer.apply(
+                        img,
+                        x1, y1, x2, y2,
+                        mode=job.mode,
+                        color=job.color,
+                        padding=job.padding
+                    )
+
+                    faces_in_frame += 1
+                    stats.faces_detected += 1
+
+                # --- YOLO detection commented out ---
+                # results = model.predict(
+                #     img,
+                #     conf=job.confidence,
+                #     classes=[0],  # Only detect person class (closest to face in standard YOLO)
+                #     half=True,    # FP16 inference on CUDA
+                #     verbose=False
+                # )
+                #
+                # # Process detections
+                # faces_in_frame = 0
+                # for result in results:
+                #     boxes = result.boxes
+                #     if boxes is not None and len(boxes) > 0:
+                #         # Get all boxes at once for efficiency
+                #         xyxy = boxes.xyxy.cpu().numpy().astype(int)
+                #         for box_coords in xyxy:
+                #             x1, y1, x2, y2 = box_coords
+                #
+                #             # Apply anonymization
+                #             img = Anonymizer.apply(
+                #                 img,
+                #                 x1, y1, x2, y2,
+                #                 mode=job.mode,
+                #                 color=job.color,
+                #                 padding=job.padding
+                #             )
+                #
+                #             faces_in_frame += 1
+                #             stats.faces_detected += 1
 
                 # Convert back to video frame
                 new_frame = av.VideoFrame.from_ndarray(img, format='bgr24')
