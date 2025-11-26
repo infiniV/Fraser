@@ -19,8 +19,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from python.processing.tracker import ByteTracker, ByteTrackerConfig, TemporalBuffer
-from python.processing.anonymizer import Anonymizer
+from processing.tracker import ByteTracker, ByteTrackerConfig, TemporalBuffer
+from processing.anonymizer import Anonymizer
 
 
 # Resolution presets for detection

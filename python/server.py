@@ -9,7 +9,7 @@ import torch
 import asyncio
 import uuid
 
-from python.processing.pipeline import VideoProcessor, ProcessingConfig, ProcessingStats
+from processing.pipeline import VideoProcessor, ProcessingConfig, ProcessingStats
 
 
 class ProcessRequest(BaseModel):

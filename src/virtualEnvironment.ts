@@ -79,17 +79,18 @@ export class VirtualEnvironment extends EventEmitter {
     };
 
     try {
-      progressCallback('Creating virtual environment...');
-
       const venvExists = await this.exists();
-      if (venvExists) {
-        progressCallback('Virtual environment already exists');
-        return;
+
+      if (!venvExists) {
+        progressCallback('Creating virtual environment...');
+        await this.runUvPty(['venv', this.venvPath], progressCallback);
+      } else {
+        progressCallback('Virtual environment exists, checking dependencies...');
       }
 
-      await this.runUvPty(['venv', this.venvPath], progressCallback);
-
-      progressCallback('Installing requirements...');
+      // Always run pip install to ensure new dependencies are installed
+      // uv is fast and skips already-installed packages
+      progressCallback('Installing/updating requirements...');
 
       const requirementsExists = await fs
         .access(this.requirementsPath)
