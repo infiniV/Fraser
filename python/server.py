@@ -9,8 +9,7 @@ import torch
 import asyncio
 import uuid
 
-from processing import VideoProcessor
-from processing.pipeline import ProcessingJob
+from python.processing.pipeline import VideoProcessor, ProcessingConfig, ProcessingStats
 
 
 class ProcessRequest(BaseModel):
@@ -87,7 +86,7 @@ RESOLUTION_MAP = {
 websocket_connections: List[WebSocket] = []
 active_connections: Dict[str, WebSocket] = {}
 active_jobs: Dict[str, dict] = {}
-video_processor: Optional[VideoProcessor] = None
+cancel_flags: Dict[str, bool] = {}
 
 
 async def broadcast_progress(job_id: str, data: dict):
@@ -113,44 +112,17 @@ async def broadcast_to_all(message: dict):
         websocket_connections.remove(websocket)
 
 
-def sync_progress_callback(job_id: str):
-    last_logged = [0]  # Use list to allow modification in closure
-
-    def callback(frame: int, total_frames: int, faces: int, fps: float):
-        progress = {
-            "type": "progress",
-            "job_id": job_id,
-            "frame": frame,
-            "total_frames": total_frames,
-            "faces_in_frame": faces,
-            "fps": round(fps, 2),
-            "percent": round((frame / total_frames) * 100, 1) if total_frames > 0 else 0
-        }
-        active_jobs[job_id] = progress
-
-        # Only log every 100 frames to reduce overhead
-        if frame - last_logged[0] >= 100 or frame == total_frames:
-            last_logged[0] = frame
-            print(f"[{job_id[:8]}] Frame {frame}/{total_frames} ({progress['percent']}%) - {faces} faces - {fps:.1f} FPS")
-    return callback
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global video_processor
     print("Starting Fraser FastAPI server...")
     device_info = get_device_info()
     print(f"Device: {device_info.type} - {device_info.name}")
-
-    # Initialize video processor
-    models_dir = Path(__file__).parent / "models"
-    models_dir.mkdir(exist_ok=True)
-    video_processor = VideoProcessor(str(models_dir))
 
     yield
     print("Shutting down Fraser FastAPI server...")
     websocket_connections.clear()
     active_jobs.clear()
+    cancel_flags.clear()
 
 
 app = FastAPI(
@@ -192,57 +164,115 @@ async def get_models():
 
 def run_processing(job_id: str, request: ProcessRequest):
     """Run video processing synchronously in background thread."""
-    global video_processor
-
     input_path = Path(request.input_path)
     output_path = Path(request.output_path)
 
-    job = ProcessingJob(
-        id=job_id,
-        input_path=str(input_path),
-        output_path=str(output_path),
-        model=request.model,
-        mode=request.redaction_mode,
-        color=request.redaction_color,
+    # Create ProcessingConfig from request parameters
+    config = ProcessingConfig(
+        input_path=input_path,
+        output_path=output_path,
+        model_name=request.model,
         confidence=request.confidence,
-        padding=request.padding
+        padding=request.padding,
+        detection_resolution=request.detection_resolution,
+        redaction_mode=request.redaction_mode,
+        redaction_color=request.redaction_color,
+        temporal_buffer=request.temporal_buffer,
+        generate_audit=request.generate_audit,
+        thumbnail_interval=request.thumbnail_interval,
     )
+
+    # Create progress callback that updates jobs dict AND broadcasts via WebSocket
+    def progress_callback(frame: int, total_frames: int, faces: int, fps: float):
+        progress = {
+            "type": "progress",
+            "job_id": job_id,
+            "frame": frame,
+            "total_frames": total_frames,
+            "faces_in_frame": faces,
+            "fps": round(fps, 2),
+            "percent": round((frame / total_frames) * 100, 1) if total_frames > 0 else 0
+        }
+        active_jobs[job_id] = progress
+
+        # Broadcast to WebSocket if connected
+        if job_id in active_connections:
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(broadcast_progress(job_id, progress))
+            except Exception:
+                pass
+
+        # Log progress occasionally
+        if frame % 100 == 0 or frame == total_frames:
+            print(f"[{job_id[:8]}] Frame {frame}/{total_frames} ({progress['percent']}%) - {faces} faces - {fps:.1f} FPS")
+
+    # Create VideoProcessor with config and progress callback
+    processor = VideoProcessor(config, on_progress=progress_callback)
 
     try:
         print(f"[{job_id[:8]}] Starting processing: {input_path.name}")
-        stats = video_processor.process(
-            job,
-            progress_callback=sync_progress_callback(job_id)
-        )
+
+        # Process video
+        stats = processor.process()
+
         print(f"[{job_id[:8]}] Completed: {stats.processed_frames} frames, {stats.faces_detected} faces, {stats.average_fps:.1f} FPS")
 
-        # Save summary report
-        output_dir = Path(output_path).parent
-        report_path = video_processor.save_report(job, stats, str(output_dir))
-        print(f"[{job_id[:8]}] Report saved: {report_path}")
-
-        active_jobs[job_id] = {
+        # Update job with completion data
+        completion_data = {
             "type": "completed",
             "job_id": job_id,
             "stats": {
                 "total_frames": stats.total_frames,
                 "processed_frames": stats.processed_frames,
                 "faces_detected": stats.faces_detected,
+                "unique_tracks": stats.unique_tracks,
                 "processing_time": round(stats.processing_time, 2),
-                "average_fps": round(stats.average_fps, 2)
+                "average_fps": round(stats.average_fps, 2),
+                "detection_fps": round(stats.detection_fps, 2)
             },
-            "output_path": str(output_path),
-            "report_path": report_path
+            "output_path": str(output_path)
         }
+
+        active_jobs[job_id] = completion_data
+
+        # Broadcast completion to WebSocket
+        if job_id in active_connections:
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(broadcast_progress(job_id, completion_data))
+            except Exception:
+                pass
+
     except Exception as e:
         print(f"[{job_id[:8]}] Error: {e}")
         import traceback
         traceback.print_exc()
-        active_jobs[job_id] = {
+
+        error_data = {
             "type": "error",
             "job_id": job_id,
             "error": str(e)
         }
+
+        active_jobs[job_id] = error_data
+
+        # Broadcast error to WebSocket
+        if job_id in active_connections:
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(broadcast_progress(job_id, error_data))
+            except Exception:
+                pass
+    finally:
+        # Clean up cancel flag
+        cancel_flags.pop(job_id, None)
 
 
 @app.post("/process", response_model=ProcessResponse)
@@ -276,8 +306,8 @@ async def get_job_status(job_id: str):
 
 @app.post("/cancel/{job_id}", response_model=CancelResponse)
 async def cancel_job(job_id: str):
-    if video_processor:
-        video_processor.cancel()
+    # Mark job for cancellation
+    cancel_flags[job_id] = True
     return CancelResponse(
         job_id=job_id,
         status="cancelled",
