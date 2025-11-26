@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:8420;">
   <title>Fraser</title>
   <link rel="stylesheet" href="styles/theme.css">
   <link rel="stylesheet" href="styles/main.css">
@@ -94,6 +94,11 @@
     </main>
     <footer class="status-bar">
       <span id="status-text">Ready</span>
+      <div class="progress-stats">
+        <span id="fps-display">-- FPS</span>
+        <span id="tracks-display">-- tracks</span>
+        <span id="eta-display">ETA: --:--</span>
+      </div>
       <span id="status-gpu">Detecting GPU...</span>
     </footer>
   </div>

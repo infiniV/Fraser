@@ -291,6 +291,7 @@ class FraserApp {
       document.getElementById('btn-start').disabled = false;
       document.getElementById('btn-pause').disabled = true;
       this.setStatus('All jobs completed');
+      this.resetProgressUI();
     }
   }
 
@@ -468,6 +469,8 @@ class FraserApp {
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-pause').disabled = true;
     this.setStatus('Paused');
+    this.resetProgressUI();
+    this.disconnectProgressSocket();
 
     window.electronAPI.pauseProcessing();
   }
@@ -536,6 +539,40 @@ class FraserApp {
       this.progressSocket.close();
       this.progressSocket = null;
     }
+  }
+
+  updateProgressUI(data) {
+    const { fps, tracks, eta } = data;
+
+    // Update FPS display
+    if (fps !== undefined) {
+      const fpsDisplay = document.getElementById('fps-display');
+      fpsDisplay.textContent = `${Math.round(fps)} FPS`;
+    }
+
+    // Update tracks display
+    if (tracks !== undefined) {
+      const tracksDisplay = document.getElementById('tracks-display');
+      tracksDisplay.textContent = `${tracks} tracks`;
+    }
+
+    // Update ETA display
+    if (eta !== undefined) {
+      const etaDisplay = document.getElementById('eta-display');
+      if (eta > 0) {
+        const minutes = Math.floor(eta / 60);
+        const seconds = Math.floor(eta % 60);
+        etaDisplay.textContent = `ETA: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+      } else {
+        etaDisplay.textContent = 'ETA: --:--';
+      }
+    }
+  }
+
+  resetProgressUI() {
+    document.getElementById('fps-display').textContent = '-- FPS';
+    document.getElementById('tracks-display').textContent = '-- tracks';
+    document.getElementById('eta-display').textContent = 'ETA: --:--';
   }
 }
 
