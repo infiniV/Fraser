@@ -71,16 +71,26 @@ async function processItem(
     status: 'processing'
   });
 
+  // Build output file path from directory and item name
+  const path = require('path');
+  const outputFilePath = path.join(outputPath, item.name);
+
   // Start processing on Python server
   const response = await fetch(`http://localhost:${PYTHON_PORT}/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      file: item.path,
-      output_dir: outputPath,
+      input_path: item.path,
+      output_path: outputFilePath,
       model: settings.model,
-      mode: settings.mode,
-      confidence: settings.confidence
+      confidence: settings.confidence,
+      padding: 0.20,
+      detection_resolution: '360p',
+      redaction_mode: settings.mode,
+      redaction_color: '#000000',
+      temporal_buffer: 5,
+      generate_audit: true,
+      thumbnail_interval: 30
     })
   });
 
