@@ -4,6 +4,7 @@ import { resolve } from 'path';
 export default defineConfig({
   build: {
     outDir: '.vite/build',
+    emptyOutDir: false,
     lib: {
       entry: resolve(__dirname, 'src/preload.ts'),
       formats: ['cjs'],

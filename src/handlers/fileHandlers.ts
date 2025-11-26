@@ -14,7 +14,7 @@ export function registerFileHandlers(mainWindow: BrowserWindow): void {
         { name: 'All Files', extensions: ['*'] }
       ],
     });
-    return result.canceled ? [] : result.filePaths;
+    return result;
   });
 
   ipcMain.handle(IPC_CHANNELS.SELECT_FOLDER, async () => {
@@ -22,7 +22,7 @@ export function registerFileHandlers(mainWindow: BrowserWindow): void {
       title: 'Select Folder with Videos',
       properties: ['openDirectory'],
     });
-    return result.canceled ? null : result.filePaths[0];
+    return result;
   });
 
   ipcMain.handle(IPC_CHANNELS.SELECT_OUTPUT, async () => {
@@ -30,6 +30,6 @@ export function registerFileHandlers(mainWindow: BrowserWindow): void {
       title: 'Select Output Folder',
       properties: ['openDirectory', 'createDirectory'],
     });
-    return result.canceled ? null : result.filePaths[0];
+    return result;
   });
 }

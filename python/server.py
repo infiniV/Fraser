@@ -1,21 +1,26 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
+import concurrent.futures
+from pathlib import Path
 import torch
 import asyncio
 import uuid
+
+from processing import VideoProcessor
+from processing.pipeline import ProcessingJob
 
 
 class ProcessRequest(BaseModel):
     file: str = Field(..., description="Path to the video file to process")
     output_dir: str = Field(..., description="Directory to save processed output")
     model: str = Field(default="yolov8n-face.pt", description="Face detection model to use")
-    mode: Literal["blur", "pixelate", "mask"] = Field(default="blur", description="Processing mode")
-    color: Optional[str] = Field(default=None, description="Color for mask mode (hex format)")
+    mode: Literal["blur", "black", "color"] = Field(default="blur", description="Processing mode")
+    color: Optional[str] = Field(default="#000000", description="Color for color mode (hex format)")
     confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="Detection confidence threshold")
-    padding: int = Field(default=10, ge=0, description="Padding around detected faces in pixels")
+    padding: float = Field(default=0.1, ge=0.0, le=1.0, description="Padding as fraction of face size")
 
 
 class DeviceInfo(BaseModel):
@@ -69,6 +74,8 @@ def get_device_info() -> DeviceInfo:
 
 
 websocket_connections: List[WebSocket] = []
+active_jobs: Dict[str, dict] = {}
+video_processor: Optional[VideoProcessor] = None
 
 
 async def broadcast_progress(message: dict):
@@ -83,14 +90,44 @@ async def broadcast_progress(message: dict):
         websocket_connections.remove(websocket)
 
 
+def sync_progress_callback(job_id: str):
+    last_logged = [0]  # Use list to allow modification in closure
+
+    def callback(frame: int, total_frames: int, faces: int, fps: float):
+        progress = {
+            "type": "progress",
+            "job_id": job_id,
+            "frame": frame,
+            "total_frames": total_frames,
+            "faces_in_frame": faces,
+            "fps": round(fps, 2),
+            "percent": round((frame / total_frames) * 100, 1) if total_frames > 0 else 0
+        }
+        active_jobs[job_id] = progress
+
+        # Only log every 100 frames to reduce overhead
+        if frame - last_logged[0] >= 100 or frame == total_frames:
+            last_logged[0] = frame
+            print(f"[{job_id[:8]}] Frame {frame}/{total_frames} ({progress['percent']}%) - {faces} faces - {fps:.1f} FPS")
+    return callback
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global video_processor
     print("Starting Fraser FastAPI server...")
     device_info = get_device_info()
     print(f"Device: {device_info.type} - {device_info.name}")
+
+    # Initialize video processor
+    models_dir = Path(__file__).parent / "models"
+    models_dir.mkdir(exist_ok=True)
+    video_processor = VideoProcessor(str(models_dir))
+
     yield
     print("Shutting down Fraser FastAPI server...")
     websocket_connections.clear()
+    active_jobs.clear()
 
 
 app = FastAPI(
@@ -130,19 +167,94 @@ async def get_models():
     return ModelsResponse(models=available_models)
 
 
+def run_processing(job_id: str, request: ProcessRequest):
+    """Run video processing synchronously in background thread."""
+    global video_processor
+
+    input_path = Path(request.file)
+    output_dir = Path(request.output_dir)
+    output_path = output_dir / f"{input_path.stem}_processed{input_path.suffix}"
+
+    job = ProcessingJob(
+        id=job_id,
+        input_path=str(input_path),
+        output_path=str(output_path),
+        model=request.model,
+        mode=request.mode,
+        color=request.color or "#000000",
+        confidence=request.confidence,
+        padding=request.padding
+    )
+
+    try:
+        print(f"[{job_id[:8]}] Starting processing: {input_path.name}")
+        stats = video_processor.process(
+            job,
+            progress_callback=sync_progress_callback(job_id)
+        )
+        print(f"[{job_id[:8]}] Completed: {stats.processed_frames} frames, {stats.faces_detected} faces, {stats.average_fps:.1f} FPS")
+
+        # Save summary report
+        report_path = video_processor.save_report(job, stats, str(output_dir))
+        print(f"[{job_id[:8]}] Report saved: {report_path}")
+
+        active_jobs[job_id] = {
+            "type": "completed",
+            "job_id": job_id,
+            "stats": {
+                "total_frames": stats.total_frames,
+                "processed_frames": stats.processed_frames,
+                "faces_detected": stats.faces_detected,
+                "processing_time": round(stats.processing_time, 2),
+                "average_fps": round(stats.average_fps, 2)
+            },
+            "output_path": str(output_path),
+            "report_path": report_path
+        }
+    except Exception as e:
+        print(f"[{job_id[:8]}] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        active_jobs[job_id] = {
+            "type": "error",
+            "job_id": job_id,
+            "error": str(e)
+        }
+
+
 @app.post("/process", response_model=ProcessResponse)
-async def process_video(request: ProcessRequest):
+async def process_video(request: ProcessRequest, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
+
+    # Validate input file exists
+    if not Path(request.file).exists():
+        raise HTTPException(status_code=400, detail=f"Input file not found: {request.file}")
+
+    # Validate output directory
+    output_dir = Path(request.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Start processing in background
+    background_tasks.add_task(run_processing, job_id, request)
 
     return ProcessResponse(
         job_id=job_id,
-        status="queued",
-        message=f"Video processing job {job_id} has been queued"
+        status="processing",
+        message=f"Video processing started for {Path(request.file).name}"
     )
+
+
+@app.get("/job/{job_id}")
+async def get_job_status(job_id: str):
+    if job_id not in active_jobs:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return active_jobs[job_id]
 
 
 @app.post("/cancel/{job_id}", response_model=CancelResponse)
 async def cancel_job(job_id: str):
+    if video_processor:
+        video_processor.cancel()
     return CancelResponse(
         job_id=job_id,
         status="cancelled",

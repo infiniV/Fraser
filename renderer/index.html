@@ -9,6 +9,21 @@
   <link rel="stylesheet" href="styles/main.css">
 </head>
 <body>
+  <!-- Setup Overlay -->
+  <div id="setup-overlay" class="setup-overlay">
+    <div class="setup-content">
+      <h1 class="setup-title">Setting up Fraser</h1>
+      <p class="setup-subtitle">First-time setup - downloading dependencies</p>
+      <div class="setup-progress">
+        <div class="setup-progress__bar">
+          <div id="setup-progress-fill" class="setup-progress__fill"></div>
+        </div>
+        <span id="setup-progress-text" class="setup-progress__text">0%</span>
+      </div>
+      <div id="setup-message" class="setup-message">Initializing...</div>
+      <div id="setup-packages" class="setup-packages"></div>
+    </div>
+  </div>
   <div id="app">
     <header class="header">
       <h1 class="header__title">Fraser</h1>

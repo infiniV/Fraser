@@ -55,24 +55,46 @@ class VideoProcessor:
         """Load YOLO model with caching.
 
         Args:
-            model_name: Name of the model file (e.g., "yolov8n-face.pt")
+            model_name: Name of the model file (e.g., "yolov8n-face" or "yolov8n-face.pt")
 
         Returns:
             Loaded YOLO model
-
-        Raises:
-            FileNotFoundError: If model file doesn't exist
         """
+        # Normalize model name - add .pt if missing
+        if not model_name.endswith('.pt'):
+            model_name = f"{model_name}.pt"
+
         if model_name in self.models_cache:
             return self.models_cache[model_name]
 
         model_path = self.models_dir / model_name
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        model = YOLO(str(model_path))
+        # Try local file first
+        if model_path.exists():
+            print(f"Loading model from: {model_path}")
+            model = YOLO(str(model_path))
+        else:
+            # Try standard YOLO model name (will auto-download)
+            # Map face models to standard models as fallback
+            # Use nano models for speed - face detection doesn't need large models
+            fallback_map = {
+                "yolov8n-face.pt": "yolov8n.pt",
+                "yolov8s-face.pt": "yolov8n.pt",  # Use nano for speed
+                "yolov8m-face.pt": "yolov8n.pt",  # Use nano for speed
+                "yolov8l-face.pt": "yolov8s.pt",
+                "yolov8x-face.pt": "yolov8s.pt",
+            }
+            standard_name = fallback_map.get(model_name, model_name)
+            print(f"Model {model_name} not found locally, using {standard_name} (auto-download)")
+            model = YOLO(standard_name)
+
+        # Move to CUDA if available - FP16 is handled in predict() call
+        import torch
+        if torch.cuda.is_available():
+            model.to('cuda')
+            print("Model loaded on CUDA")
+
         self.models_cache[model_name] = model
-
         return model
 
     def cancel(self):
@@ -147,13 +169,14 @@ class VideoProcessor:
             output_stream.width = input_stream.width
             output_stream.height = input_stream.height
             output_stream.pix_fmt = 'yuv420p'
-            output_stream.options = {'crf': '23', 'preset': 'medium'}
+            # Use faster preset for speed - ultrafast/superfast/veryfast/faster/fast/medium
+            output_stream.options = {'crf': '23', 'preset': 'veryfast'}
 
             # Checkpoint file for crash recovery
             checkpoint_file = output_path.parent / f".{output_path.stem}_checkpoint.json"
 
             frame_count = 0
-            checkpoint_interval = 100
+            checkpoint_interval = 500  # Less frequent checkpoints for speed
 
             # Process frames
             for frame in input_container.decode(video=0):
@@ -170,11 +193,13 @@ class VideoProcessor:
                 # Convert frame to numpy array
                 img = frame.to_ndarray(format='bgr24')
 
-                # Run YOLO detection with stream=True for memory efficiency
+                # Run YOLO detection - optimized settings
+                # classes=[0] = person only (standard YOLO), half=True for FP16
                 results = model.predict(
                     img,
                     conf=job.confidence,
-                    stream=True,
+                    classes=[0],  # Only detect person class (closest to face in standard YOLO)
+                    half=True,    # FP16 inference on CUDA
                     verbose=False
                 )
 
@@ -183,10 +208,10 @@ class VideoProcessor:
                 for result in results:
                     boxes = result.boxes
                     if boxes is not None and len(boxes) > 0:
-                        for box in boxes:
-                            # Get bounding box coordinates
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        # Get all boxes at once for efficiency
+                        xyxy = boxes.xyxy.cpu().numpy().astype(int)
+                        for box_coords in xyxy:
+                            x1, y1, x2, y2 = box_coords
 
                             # Apply anonymization
                             img = Anonymizer.apply(
@@ -212,12 +237,10 @@ class VideoProcessor:
                 frame_count += 1
                 stats.processed_frames = frame_count
 
-                # Calculate FPS
-                elapsed = time.time() - start_time
-                current_fps = frame_count / elapsed if elapsed > 0 else 0
-
-                # Progress callback
-                if progress_callback:
+                # Progress callback every 10 frames for efficiency
+                if progress_callback and frame_count % 10 == 0:
+                    elapsed = time.time() - start_time
+                    current_fps = frame_count / elapsed if elapsed > 0 else 0
                     progress_callback(frame_count, stats.total_frames, faces_in_frame, current_fps)
 
                 # Checkpoint every N frames

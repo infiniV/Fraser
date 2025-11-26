@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import pty from 'node-pty';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { app } from 'electron';
@@ -6,6 +6,8 @@ import log from 'electron-log/main';
 import { EventEmitter } from 'node:events';
 
 export class VirtualEnvironment extends EventEmitter {
+  private uvPty: pty.IPty | undefined;
+
   get basePath(): string {
     return app.getPath('userData');
   }
@@ -35,7 +37,7 @@ export class VirtualEnvironment extends EventEmitter {
     const exe = platform === 'win32' ? 'uv.exe' : 'uv';
     const binPath = app.isPackaged
       ? path.join(process.resourcesPath, 'bin', platformFolder, exe)
-      : path.join(__dirname, '..', 'bin', platformFolder, exe);
+      : path.join(app.getAppPath(), 'bin', platformFolder, exe);
 
     return binPath;
   }
@@ -53,7 +55,7 @@ export class VirtualEnvironment extends EventEmitter {
   get requirementsPath(): string {
     const reqPath = app.isPackaged
       ? path.join(process.resourcesPath, 'python', 'requirements.txt')
-      : path.join(__dirname, '..', 'python', 'requirements.txt');
+      : path.join(app.getAppPath(), 'python', 'requirements.txt');
 
     return reqPath;
   }
@@ -85,7 +87,7 @@ export class VirtualEnvironment extends EventEmitter {
         return;
       }
 
-      await this.runUv(['venv', this.venvPath], progressCallback);
+      await this.runUvPty(['venv', this.venvPath], progressCallback);
 
       progressCallback('Installing requirements...');
 
@@ -95,7 +97,7 @@ export class VirtualEnvironment extends EventEmitter {
         .catch(() => false);
 
       if (requirementsExists) {
-        await this.runUv(
+        await this.runUvPty(
           ['pip', 'install', '-r', this.requirementsPath],
           progressCallback
         );
@@ -108,57 +110,65 @@ export class VirtualEnvironment extends EventEmitter {
       const message = error instanceof Error ? error.message : String(error);
       log.error('Failed to create virtual environment:', message);
       throw new Error(`Failed to create virtual environment: ${message}`);
+    } finally {
+      // Clean up PTY
+      if (this.uvPty) {
+        this.uvPty.kill();
+        this.uvPty = undefined;
+      }
     }
   }
 
-  private async runUv(
+  private async runUvPty(
     args: string[],
     onProgress?: (message: string) => void
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const uvPath = this.uvPath;
+      const fullCommand = `"${uvPath}" ${args.join(' ')}`;
 
-      log.info(`Running uv command: ${uvPath} ${args.join(' ')}`);
+      log.info(`Running uv command: ${fullCommand}`);
 
-      const child = spawn(uvPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
+      // Use node-pty for TTY support which enables progress output
+      this.uvPty = pty.spawn(uvPath, args, {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: this.basePath,
         env: {
           ...process.env,
           PYTHONUNBUFFERED: '1',
-        },
+          VIRTUAL_ENV: this.venvPath,
+          FORCE_COLOR: '1',
+          TERM: 'xterm-256color',
+        } as Record<string, string>,
       });
 
-      let stdout = '';
-      let stderr = '';
+      let output = '';
 
-      child.stdout?.on('data', (data: Buffer) => {
-        const message = data.toString();
-        stdout += message;
-        log.info(`uv stdout: ${message.trim()}`);
-        if (onProgress) {
-          onProgress(message.trim());
+      this.uvPty.onData((data) => {
+        output += data;
+
+        // Clean ANSI codes for logging but show raw for progress parsing
+        const cleanLine = data.replace(/\x1b\[[0-9;]*m/g, '').trim();
+
+        if (cleanLine) {
+          log.info(`uv: ${cleanLine}`);
+          if (onProgress) {
+            // Send meaningful lines to progress callback
+            const lines = cleanLine.split('\n').filter(l => l.trim());
+            lines.forEach(line => {
+              onProgress(line);
+            });
+          }
         }
       });
 
-      child.stderr?.on('data', (data: Buffer) => {
-        const message = data.toString();
-        stderr += message;
-        log.info(`uv stderr: ${message.trim()}`);
-        if (onProgress) {
-          onProgress(message.trim());
-        }
-      });
-
-      child.on('error', (error) => {
-        log.error('Failed to spawn uv process:', error);
-        reject(new Error(`Failed to spawn uv: ${error.message}`));
-      });
-
-      child.on('close', (code) => {
-        if (code === 0) {
+      this.uvPty.onExit(({ exitCode }) => {
+        if (exitCode === 0) {
           resolve();
         } else {
-          const error = `uv process exited with code ${code}\nstdout: ${stdout}\nstderr: ${stderr}`;
+          const error = `uv process exited with code ${exitCode}\nOutput: ${output}`;
           log.error(error);
           reject(new Error(error));
         }

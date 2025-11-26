@@ -2,18 +2,135 @@ class FraserApp {
   constructor() {
     this.queue = [];
     this.isProcessing = false;
+    this.pythonReady = false;
     this.outputPath = '';
     this.settings = {
       model: 'yolov8m-face',
       mode: 'blur',
       confidence: 0.3
     };
+    this.setupPackages = [];
+    this.totalPackages = 0;
+    this.installedPackages = 0;
   }
 
   init() {
     this.bindEvents();
-    this.detectGPU();
-    this.setStatus('Ready');
+    this.setStatus('Initializing...');
+    document.getElementById('status-gpu').textContent = 'Starting...';
+    this.showSetupOverlay();
+    this.loadSavedState();
+  }
+
+  async loadSavedState() {
+    try {
+      const state = await window.electronAPI.loadQueue();
+      if (state && state.queue && state.queue.length > 0) {
+        this.queue = state.queue;
+        this.outputPath = state.outputPath || '';
+        this.settings = state.settings || this.settings;
+
+        if (this.outputPath) {
+          document.getElementById('output-path').value = this.outputPath;
+        }
+
+        // Update settings dropdowns
+        if (state.settings) {
+          document.getElementById('select-model').value = state.settings.model;
+          document.getElementById('select-mode').value = state.settings.mode;
+          document.getElementById('select-confidence').value = state.settings.confidence.toString();
+        }
+
+        this.renderQueue();
+        console.log('Restored queue state:', this.queue.length, 'items');
+      }
+    } catch (error) {
+      console.error('Error loading saved state:', error);
+    }
+  }
+
+  async saveState() {
+    try {
+      await window.electronAPI.saveQueue({
+        queue: this.queue,
+        outputPath: this.outputPath,
+        settings: this.settings
+      });
+    } catch (error) {
+      console.error('Error saving state:', error);
+    }
+  }
+
+  showSetupOverlay() {
+    document.getElementById('setup-overlay').classList.remove('hidden');
+  }
+
+  hideSetupOverlay() {
+    document.getElementById('setup-overlay').classList.add('hidden');
+  }
+
+  updateSetupProgress(message) {
+    const messageEl = document.getElementById('setup-message');
+    const packagesEl = document.getElementById('setup-packages');
+    const progressFill = document.getElementById('setup-progress-fill');
+    const progressText = document.getElementById('setup-progress-text');
+
+    messageEl.textContent = message;
+
+    // Parse uv output for package info
+    const resolvedMatch = message.match(/Resolved (\d+) packages/);
+    if (resolvedMatch) {
+      this.totalPackages = parseInt(resolvedMatch[1]);
+    }
+
+    const installedMatch = message.match(/Installed (\d+) packages?/);
+    if (installedMatch) {
+      this.installedPackages = parseInt(installedMatch[1]);
+    }
+
+    // Check for download progress
+    const downloadMatch = message.match(/Downloading|Prepared|Installing/i);
+    if (downloadMatch || resolvedMatch) {
+      // Show indeterminate progress while downloading
+      if (this.totalPackages > 0 && this.installedPackages > 0) {
+        const percent = Math.round((this.installedPackages / this.totalPackages) * 100);
+        progressFill.style.width = `${percent}%`;
+        progressText.textContent = `${percent}%`;
+      } else if (resolvedMatch) {
+        progressFill.style.width = '20%';
+        progressText.textContent = 'Downloading...';
+      }
+    }
+
+    // Track package names
+    const packageMatch = message.match(/([a-z0-9_-]+)==[\d.]+/gi);
+    if (packageMatch) {
+      packageMatch.forEach(pkg => {
+        if (!this.setupPackages.includes(pkg)) {
+          this.setupPackages.push(pkg);
+          const item = document.createElement('div');
+          item.className = 'setup-packages__item';
+          item.textContent = pkg;
+          packagesEl.appendChild(item);
+          packagesEl.scrollTop = packagesEl.scrollHeight;
+        }
+      });
+    }
+
+    // Check for specific stages
+    if (message.includes('Creating virtual environment')) {
+      progressFill.style.width = '10%';
+      progressText.textContent = '10%';
+    } else if (message.includes('Installing requirements')) {
+      progressFill.style.width = '15%';
+      progressText.textContent = '15%';
+    } else if (message.includes('Starting Python server')) {
+      progressFill.style.width = '90%';
+      progressText.textContent = '90%';
+    } else if (message.includes('setup complete')) {
+      progressFill.style.width = '100%';
+      progressText.textContent = '100%';
+    }
   }
 
   bindEvents() {
@@ -49,14 +166,17 @@ class FraserApp {
     // Settings
     document.getElementById('select-model').addEventListener('change', (e) => {
       this.settings.model = e.target.value;
+      this.saveState();
     });
 
     document.getElementById('select-mode').addEventListener('change', (e) => {
       this.settings.mode = e.target.value;
+      this.saveState();
     });
 
     document.getElementById('select-confidence').addEventListener('change', (e) => {
       this.settings.confidence = parseFloat(e.target.value);
+      this.saveState();
     });
 
     // Output
@@ -73,19 +193,79 @@ class FraserApp {
       this.pauseProcessing();
     });
 
-    // IPC listeners
-    window.electronAPI.onProcessingProgress((data) => {
-      this.updateQueueItem(data.id, { progress: data.progress, status: 'processing' });
+    // Setup progress listener
+    window.electronAPI.onSetupProgress((_, message) => {
+      this.setStatus(message);
+      this.updateSetupProgress(message);
     });
 
-    window.electronAPI.onProcessingComplete((data) => {
-      this.updateQueueItem(data.id, { progress: 100, status: 'completed' });
+    // Python ready listener
+    window.electronAPI.onPythonReady(() => {
+      this.setStatus('Ready');
+      this.pythonReady = true;
+      this.hideSetupOverlay();
+      this.detectGPU();
     });
 
-    window.electronAPI.onProcessingError((data) => {
-      this.updateQueueItem(data.id, { status: 'error' });
-      this.setStatus(`Error: ${data.error}`);
+    // Python error listener
+    window.electronAPI.onPythonError((_, error) => {
+      this.setStatus(`Error: ${error}`);
+      document.getElementById('status-gpu').textContent = 'Server Error';
+      document.getElementById('setup-message').textContent = `Error: ${error}`;
+      document.getElementById('setup-progress-fill').style.background = 'var(--destructive)';
     });
+
+    // Processing progress listener
+    window.electronAPI.onProcessProgress((_, data) => {
+      this.handleProcessProgress(data);
+    });
+  }
+
+  handleProcessProgress(data) {
+    const { itemId, progress, status, jobId, stats, error, fps, facesInFrame } = data;
+
+    // Find the queue item
+    const item = this.queue.find(q => q.id === itemId);
+    if (!item) return;
+
+    if (status === 'processing') {
+      item.status = 'processing';
+      item.progress = progress || 0;
+      item.jobId = jobId;
+      if (fps) {
+        this.setStatus(`Processing ${item.name} - ${fps} FPS`);
+      }
+    } else if (status === 'completed') {
+      item.status = 'completed';
+      item.progress = 100;
+      if (stats) {
+        item.faces = stats.faces_detected;
+        item.duration = `${Math.round(stats.processing_time)}s`;
+      }
+      this.setStatus(`Completed: ${item.name}`);
+      this.saveState();
+      this.checkAllCompleted();
+    } else if (status === 'error') {
+      item.status = 'error';
+      item.error = error;
+      this.setStatus(`Error: ${error}`);
+      this.saveState();
+    }
+
+    this.renderQueue();
+  }
+
+  checkAllCompleted() {
+    const allDone = this.queue.every(item =>
+      item.status === 'completed' || item.status === 'error'
+    );
+
+    if (allDone && this.isProcessing) {
+      this.isProcessing = false;
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-pause').disabled = true;
+      this.setStatus('All jobs completed');
+    }
   }
 
   async addFiles() {
@@ -135,6 +315,7 @@ class FraserApp {
 
       this.outputPath = result.filePaths[0];
       document.getElementById('output-path').value = this.outputPath;
+      this.saveState();
     } catch (error) {
       console.error('Error selecting output:', error);
       this.setStatus('Error selecting output folder');
@@ -152,6 +333,7 @@ class FraserApp {
 
     this.queue.push(queueItem);
     this.renderQueue();
+    this.saveState();
   }
 
   renderQueue() {
@@ -163,34 +345,53 @@ class FraserApp {
     }
 
     queueList.innerHTML = this.queue.map(item => `
-      <div class="queue-item" data-id="${item.id}">
-        <span class="queue-item__icon">${this.getStatusIcon(item.type)}</span>
-        <span class="queue-item__name" title="${item.name}">${item.name}</span>
-        <span class="queue-item__duration">${item.duration}</span>
+      <div class="queue-item queue-item--${item.status}" data-id="${item.id}">
+        <span class="queue-item__icon">${this.getStatusIcon(item.status, item.type)}</span>
+        <span class="queue-item__name" title="${item.path || item.name}">${item.name}</span>
+        <span class="queue-item__info">${this.getItemInfo(item)}</span>
         <div class="queue-item__progress">
-          <div class="queue-item__progress-fill" style="width: ${item.progress}%"></div>
+          <div class="queue-item__progress-fill queue-item__progress-fill--${item.status}" style="width: ${item.progress}%"></div>
         </div>
-        <span class="queue-item__status queue-item__status--${item.status}">${item.status}</span>
-        <button class="queue-item__remove" data-id="${item.id}">×</button>
+        <span class="queue-item__status queue-item__status--${item.status}">${this.getStatusText(item)}</span>
+        <button class="queue-item__remove" data-id="${item.id}" ${item.status === 'processing' ? 'disabled' : ''}>x</button>
       </div>
     `).join('');
 
     // Bind remove buttons
     document.querySelectorAll('.queue-item__remove').forEach(btn => {
       btn.addEventListener('click', (e) => {
+        if (e.target.disabled) return;
         const id = parseFloat(e.target.dataset.id);
         this.removeFromQueue(id);
       });
     });
   }
 
-  getStatusIcon(type) {
-    const icons = {
-      video: '🎬',
-      folder: '📁',
-      rtsp: '📡'
+  getStatusIcon(status, type) {
+    const statusIcons = {
+      completed: '[ok]',
+      processing: '[>>]',
+      error: '[!!]',
+      pending: '[..]'
     };
-    return icons[type] || '📄';
+    return statusIcons[status] || statusIcons.pending;
+  }
+
+  getItemInfo(item) {
+    if (item.status === 'completed' && item.faces !== undefined) {
+      return `${item.faces} faces`;
+    }
+    if (item.status === 'processing') {
+      return `${Math.round(item.progress)}%`;
+    }
+    return item.duration || '--';
+  }
+
+  getStatusText(item) {
+    if (item.status === 'completed') return 'Done';
+    if (item.status === 'processing') return 'Processing';
+    if (item.status === 'error') return 'Error';
+    return 'Pending';
   }
 
   updateQueueItem(id, updates) {
@@ -204,6 +405,7 @@ class FraserApp {
   removeFromQueue(id) {
     this.queue = this.queue.filter(item => item.id !== id);
     this.renderQueue();
+    this.saveState();
   }
 
   async startProcessing() {
@@ -250,9 +452,12 @@ class FraserApp {
 
   async detectGPU() {
     try {
-      const gpuInfo = await window.electronAPI.getGPUInfo();
-      const gpuText = gpuInfo.cuda ? `CUDA: ${gpuInfo.name}` : 'CPU Mode';
-      document.getElementById('status-gpu').textContent = gpuText;
+      const status = await window.electronAPI.getPythonStatus();
+      if (status.running && status.device) {
+        document.getElementById('status-gpu').textContent = status.device;
+      } else {
+        document.getElementById('status-gpu').textContent = 'Detecting GPU...';
+      }
     } catch (error) {
       console.error('Error detecting GPU:', error);
       document.getElementById('status-gpu').textContent = 'GPU: Unknown';

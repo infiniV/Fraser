@@ -18,13 +18,24 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SAVE: 'settings:save',
 
-  // Install
+  // Install/Setup
   INSTALL_PROGRESS: 'install:progress',
+  SETUP_PROGRESS: 'setup:progress',
 
   // Window
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_CLOSE: 'window:close',
+
+  // Processing
+  PROCESS_START: 'process:start',
+  PROCESS_PAUSE: 'process:pause',
+  PROCESS_PROGRESS: 'process:progress',
+
+  // Queue State
+  QUEUE_LOAD: 'queue:load',
+  QUEUE_SAVE: 'queue:save',
+  QUEUE_CLEAR: 'queue:clear',
 } as const;
 
 export const PYTHON_PORT = 8420;
