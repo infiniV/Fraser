@@ -34,10 +34,11 @@ export class PythonServer extends EventEmitter {
     }
 
     log.info('Starting Python server...');
-    const serverPath = path.join(this.pythonDir, 'server.py');
 
     try {
-      this.process = spawn(this.venvPython, [serverPath], {
+      // Run server.py from the python/ directory so local imports work
+      this.process = spawn(this.venvPython, ['server.py'], {
+        cwd: this.pythonDir,
         env: {
           ...process.env,
           PYTHONUNBUFFERED: '1',
