@@ -20,8 +20,9 @@ const config: Configuration = {
 
   win: {
     icon: './assets/UI/fraser-icon.ico',
-    target: 'nsis',
-    artifactName: 'Fraser-Setup-${version}.${ext}',
+    target: ['dir', 'zip'],
+    artifactName: 'Fraser-${version}-win.${ext}',
+    signAndEditExecutable: false,
   },
 
   nsis: {
